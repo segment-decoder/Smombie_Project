@@ -1,2 +1,0 @@
-ninja: Entering directory `C:\Users\user\Desktop\projects\smombie\opencv\.cxx\Debug\6x1h5443\x86_64'
-ninja: no work to do.
