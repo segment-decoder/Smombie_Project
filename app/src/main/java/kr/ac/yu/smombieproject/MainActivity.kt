@@ -19,15 +19,17 @@ import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
-    // 전역 변수 선언
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private lateinit var viewFinder: PreviewView
+
+    // ⚙️ 우리가 만든 핵심 3대장 모듈!
     private lateinit var alertManager: AlertManager
-
-    // 🌟 [추가 1] 팀원 C의 필터 모듈 장착 완료!
     private val signalFilter = SignalFilter()
+    private val dangerAnalyzer = DangerAnalyzer() // 🌟 판사 등판!
 
-    // 권한 요청 런처
+    // 진동 쿨타임 관리용 변수 (너무 자주 울리지 않도록)
+    private var lastVibrateTime = 0L
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -42,16 +44,10 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // 알람 매니저 객체 생성 및 뷰파인더 연결
         alertManager = AlertManager(this)
         viewFinder = findViewById(R.id.viewFinder)
 
-        // 권한 확인 및 요청
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
         } else {
             requestPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -64,31 +60,39 @@ class MainActivity : AppCompatActivity() {
         cameraProviderFuture.addListener({
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
-            // 화면에 띄우는 프리뷰 설정
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(viewFinder.surfaceProvider)
             }
 
-            // OpenCV로 넘겨줄 실시간 프레임 분석기 설정
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
-            // 🌟 [추가 2] 파이프라인 연동 부분 (완벽하게 잘하셨습니다!)
+            // 🔥 [대망의 완성된 파이프라인] 🔥
             imageAnalysis.setAnalyzer(cameraExecutor, SmombieAnalyzer { mat ->
 
-                // 1. 카메라에서 들어온 원본 흑백 Mat을 필터 기계에 넣습니다.
+                // 1단계: 팀원 C (점자 블록 노이즈 뭉개기)
                 val filteredMat = signalFilter.applyClosingFilter(mat)
 
-                // 2. 로그로 잘 변환되었는지 확인합니다.
-                Log.d("CameraManager", "원본: ${mat.width()}x${mat.height()} -> 필터링 완료!")
+                // 2단계: 팀원 B (면적 계산 및 위험 판단)
+                val isDangerNow = dangerAnalyzer.isDanger(filteredMat)
 
-                // 3. [매우 중요] 다 쓴 Mat 객체는 무조건 메모리에서 해제해야 앱이 안 튕깁니다.
-                filteredMat.release() // 필터링된 이미지 버리기
-                mat.release()         // 원본 이미지 버리기
+                // 3단계: 팀원 A (위험하면 진동 울리기!)
+                if (isDangerNow) {
+                    val currentTime = System.currentTimeMillis()
+                    // 마지막으로 울린 지 2초(2000ms)가 지났을 때만 다시 울림
+                    if (currentTime - lastVibrateTime > 2000) {
+                        Log.w("SmombieWarning", "🚨 위험 감지! 진동 발생 🚨")
+                        alertManager.playDangerVibration()
+                        lastVibrateTime = currentTime
+                    }
+                }
+
+                // 다 쓴 메모리는 반드시 반납!
+                filteredMat.release()
+                mat.release()
             })
 
-            // 후면 카메라 기본 설정
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
@@ -105,10 +109,9 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor.shutdown()
     }
 
-    // 진동 테스트용 터치 이벤트
+    // 터치 테스트 코드는 이제 지우셔도 되지만, 폰 확인용으로 남겨둡니다.
     override fun onTouchEvent(event: MotionEvent?): Boolean {
         if (event?.action == MotionEvent.ACTION_DOWN) {
-            Log.d("AlertManager", "화면 터치 감지! 진동 테스트 시작")
             alertManager.playDangerVibration()
         }
         return super.onTouchEvent(event)
