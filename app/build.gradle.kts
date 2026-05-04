@@ -50,6 +50,14 @@ android {
 }
 
 dependencies {
+    // 🌟 버전을 1.3.0 에서 1.6.0 으로 올려주세요!
+    val camerax_version = "1.6.0"
+
+    implementation("androidx.camera:camera-core:${camerax_version}")
+    implementation("androidx.camera:camera-camera2:${camerax_version}")
+    implementation("androidx.camera:camera-lifecycle:${camerax_version}")
+    implementation("androidx.camera:camera-view:${camerax_version}")
+
     implementation(project(":opencv"))
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)
