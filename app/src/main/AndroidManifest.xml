@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- xmlns:tools 부분을 깔끔하게 지웠습니다! -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-feature android:name="android.hardware.camera.any" />
+    <!-- 🌟 추가할 부분: 카메라 권한 -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -14,7 +15,8 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.SmombieProject">
+        android:theme="@style/Theme.SmombieProject"
+        tools:targetApi="31">
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -24,5 +26,4 @@
             </intent-filter>
         </activity>
     </application>
-
 </manifest>
