@@ -4,11 +4,10 @@ plugins {
 
 android {
     namespace = "kr.ac.yu.smombieproject"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 36 // 버전 함수 래핑 제거, 직관적으로 변경
+
+    // ★ [핵심 방어 로직] 최신 NDK의 libcpufeatures 삭제 버그를 피하기 위해 검증된 NDK 21버전 강제 고정
+    ndkVersion = "21.4.7075529"
 
     defaultConfig {
         applicationId = "kr.ac.yu.smombieproject"
@@ -20,6 +19,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
+                // [요소기술 1, 2] 연산을 위한 C++17 표준 적용
                 cppFlags += "-std=c++17"
             }
         }
@@ -47,10 +47,14 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true // 네이티브 라이브러리 로드 방식 안정화
+        }
+    }
 }
 
 dependencies {
-    // 🌟 버전을 1.3.0 에서 1.6.0 으로 올려주세요!
     val camerax_version = "1.6.0"
 
     implementation("androidx.camera:camera-core:${camerax_version}")
@@ -58,7 +62,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:${camerax_version}")
     implementation("androidx.camera:camera-view:${camerax_version}")
 
-    implementation(project(":opencv"))
+    implementation(project(":opencv")) // OpenCV 모듈 정상 연결
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
