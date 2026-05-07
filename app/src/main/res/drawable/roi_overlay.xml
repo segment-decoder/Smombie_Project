@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="400dp"
+    android:height="400dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+
+    <!-- 사다리꼴 ROI 가이드라인 (반투명 빨간색 테두리) -->
+    <path
+        android:pathData="M 10,100 L 90,100 L 70,50 L 30,50 Z"
+        android:strokeColor="#80FF0000"
+        android:strokeWidth="1"
+        android:fillColor="#20FF0000" />
+
+</vector>

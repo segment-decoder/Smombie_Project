@@ -19,6 +19,10 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var viewFinder: PreviewView
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var tvStatus: android.widget.TextView
+    private lateinit var tvAreaData: android.widget.TextView
+    private lateinit var tvBufferData: android.widget.TextView
+    private lateinit var statusCard: com.google.android.material.card.MaterialCardView
 
     // [파이프라인 1] 카메라 관리 모듈
     private lateinit var cameraManager: CameraManager
@@ -26,8 +30,9 @@ class MainActivity : AppCompatActivity() {
     // [요소기술 1 & 2-1] Native C++ 엔진 연동
     private val nativeProcessor = NativeProcessor()
 
-    // [요소기술 2-2] 시계열 노이즈 억제: 원형 큐 기반 알고리즘 설계
-    private val stateBuffer = TimeStateBuffer(capacity = 10, threshold = 7)
+    // [Core Tech 2-2] Time-series noise suppression algorithm: Circular queue buffer to prevent malfunctions from single-frame errors.
+    // capacity: number of recent frames to store, threshold: minimum frames required to confirm a hazard.
+    private val stateBuffer = TimeStateBuffer(capacity = 8, threshold = 5)
 
     private lateinit var vibrator: Vibrator
 
@@ -55,6 +60,10 @@ class MainActivity : AppCompatActivity() {
 
         // 레이아웃 뷰 연결 및 스레드풀 초기화 [요소기술 2: 효율적 리소스 관리]
         viewFinder = findViewById(R.id.viewFinder)
+        tvStatus = findViewById(R.id.tvStatus)
+        tvAreaData = findViewById(R.id.tvAreaData)
+        tvBufferData = findViewById(R.id.tvBufferData)
+        statusCard = findViewById(R.id.statusCard)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         // [파이프라인 5] AlertManager: 진동 하드웨어 서비스 초기화
@@ -80,27 +89,51 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * [핵심 분석 파이프라인] 실시간 프레임 처리
+     * [Core Analysis Pipeline] Real-time frame processing logic.
+     * Passes images from CameraX to the Native engine and reflects results on the UI.
      */
     private fun processImage(image: ImageProxy) {
-        // 1. [데이터 변환] ImageProxy에서 Native 주소 추출 (제로 복사 지향)
-        val matAddr = ImageUtil.getNativeAddrFromImageProxy(image)
+        // 1. [Data Conversion] Convert ImageProxy to OpenCV Mat object (Memory-efficient management).
+        val mat = ImageUtil.getMatFromImageProxy(image)
 
-        // 2. [요소기술 1 & 2-1] Native C++ 호출
-        // 하단 사다리꼴 ROI 내에서 Gaussian Blur 및 Morphology Closing 연산 수행
-        val maxArea = nativeProcessor.processFrame(matAddr)
+        // 2. [Core Tech 1 & 2-1] Invoke Native C++ Engine.
+        // Calculates the maximum area of obstacles via ROI masking and morphological filtering.
+        val maxArea = nativeProcessor.processFrame(mat.nativeObjAddr)
 
-        // 3. [요소기술 2-2] 시계열 알고리즘 적용
-        // 단일 프레임 오작동(Flickering)을 원형 큐 버퍼로 필터링하여 신뢰성 확보
-        val isDangerous = maxArea > 5000.0 // 임계값 기반 1차 판별
+        // 3. [Core Tech 2-2] Final hazard determination via time-series algorithm.
+        // Areas above 3500.0 are considered primary hazards and recorded in the time-series buffer.
+        val isDangerous = maxArea > 3500.0 
+        val hazardousResult = stateBuffer.isHazardous(isDangerous)
 
-        if (stateBuffer.isHazardous(isDangerous)) {
-            // 4. [파이프라인 5] 최종 위험 확정 시 진동 출력
+        // 4. Update UI: Display analysis results (area, hazard status) on the screen in real-time.
+        runOnUiThread {
+            updateUI(maxArea, hazardousResult)
+        }
+
+        // 5. Trigger vibration alarm when a definitive hazard occurs.
+        if (hazardousResult) {
             triggerVibration()
         }
 
-        // 프레임 자원 즉시 해제 (Native 메모리 누수 방지 필수)
+        // 6. Resource Release: Releasing the Mat object is mandatory to prevent Native memory leaks.
+        mat.release()
         image.close()
+    }
+
+    private fun updateUI(area: Double, isHazardous: Boolean) {
+        tvAreaData.text = "Detected Area: ${String.format("%.1f", area)}"
+        tvBufferData.text = "Hazard Buffer: ${stateBuffer.getBufferString()}"
+
+        if (isHazardous) {
+            tvStatus.text = "DANGER"
+            statusCard.setCardBackgroundColor(android.graphics.Color.RED)
+        } else if (area > 3000.0) {
+            tvStatus.text = "CAUTION"
+            statusCard.setCardBackgroundColor(android.graphics.Color.parseColor("#FFA500")) // Orange
+        } else {
+            tvStatus.text = "SAFE"
+            statusCard.setCardBackgroundColor(android.graphics.Color.parseColor("#4CAF50")) // Green
+        }
     }
 
     private fun triggerVibration() {

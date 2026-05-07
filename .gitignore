@@ -1,6 +1,7 @@
 # [핵심] 모든 모듈의 build 폴더를 막습니다.
 build/
 **/build/
+.gradle/
 
 # [보안] 내 PC의 SDK 경로가 담긴 파일입니다.
 local.properties

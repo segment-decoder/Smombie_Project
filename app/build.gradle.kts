@@ -6,8 +6,8 @@ android {
     namespace = "kr.ac.yu.smombieproject"
     compileSdk = 36 // 버전 함수 래핑 제거, 직관적으로 변경
 
-    // ★ [핵심 방어 로직] 최신 NDK의 libcpufeatures 삭제 버그를 피하기 위해 검증된 NDK 21버전 강제 고정
-    ndkVersion = "21.4.7075529"
+    // AGP 9.2.0 환경에서는 NDK 버전을 명시하지 않아도 최적의 버전을 자동으로 선택합니다.
+    // ndkVersion = "21.4.7075529"
 
     defaultConfig {
         applicationId = "kr.ac.yu.smombieproject"
@@ -41,7 +41,6 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
         }
     }
     buildFeatures {

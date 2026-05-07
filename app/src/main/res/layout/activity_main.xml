@@ -5,16 +5,80 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#000000"
     tools:context=".MainActivity">
 
-    <!-- 🌟 추가할 부분: 카메라 프리뷰 화면 -->
+    <!-- [파이프라인 1] 실시간 카메라 프리뷰 -->
     <androidx.camera.view.PreviewView
         android:id="@+id/viewFinder"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- [요소기술 2-1] ROI 가이드라인 오버레이 (사다리꼴) -->
+    <View
+        android:id="@+id/roiGuide"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:layout_constraintBottom_toBottomOf="parent"
+        android:background="@drawable/roi_overlay" />
+
+    <!-- 상단 Status: SAFE / CAUTION / DANGER -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/statusCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="48dp"
+        app:cardBackgroundColor="#80000000"
+        app:cardCornerRadius="20dp"
+        app:cardElevation="0dp"
+        app:strokeWidth="0dp"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="32dp"
+            android:paddingVertical="12dp"
+            android:text="SYSTEM READY"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- 하단 Data Panel: Area 및 Buffer 상태 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="#A6000000"
+        android:orientation="vertical"
+        android:padding="16dp"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <TextView
+            android:id="@+id/tvAreaData"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Detected Area: 0.0"
+            android:textColor="#00FF00"
+            android:textSize="14sp"
+            android:fontFamily="monospace" />
+
+        <TextView
+            android:id="@+id/tvBufferData"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Hazard Buffer: [----------]"
+            android:textColor="#00FF00"
+            android:textSize="14sp"
+            android:fontFamily="monospace" />
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
