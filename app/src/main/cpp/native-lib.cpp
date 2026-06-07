@@ -1,9 +1,38 @@
 #include <jni.h>
 #include <opencv2/opencv.hpp>
+#include <algorithm>
 #include <vector>
 
 using namespace cv;
 using namespace std;
+
+/**
+ * Suppresses broad illumination changes such as shadows before edge extraction.
+ * The camera input is a single Y-channel grayscale frame, so this estimates the
+ * slow-varying lighting field and keeps local surface structure as reflectance.
+ */
+static Mat normalizeIllumination(const Mat& gray) {
+    if (gray.empty()) return gray;
+
+    Mat grayFloat;
+    gray.convertTo(grayFloat, CV_32F);
+
+    int baseSize = min(gray.cols, gray.rows);
+    int kernelSize = min(max(31, baseSize / 12), 121);
+    if (kernelSize % 2 == 0) kernelSize++;
+
+    Mat illumination;
+    GaussianBlur(grayFloat, illumination, Size(kernelSize, kernelSize), 0);
+    illumination += Scalar(1.0f);
+
+    Mat reflectance;
+    divide(grayFloat, illumination, reflectance, 128.0);
+    normalize(reflectance, reflectance, 0, 255, NORM_MINMAX);
+
+    Mat normalized;
+    reflectance.convertTo(normalized, CV_8UC1);
+    return normalized;
+}
 
 extern "C"
 JNIEXPORT jdouble JNICALL
@@ -17,14 +46,18 @@ Java_kr_ac_yu_smombieproject_NativeProcessor_processFrame(
     int width = img_input.cols;
     int height = img_input.rows;
 
-    // [요소기술 1] 전처리: 연산량 축소 및 노이즈 제거
-    // RGB 3채널 영상을 1채널 Grayscale로 변환하여 후속 연산의 데이터 처리량을 66% 감소시킴.
-    Mat img_gray, img_blur, img_edge;
+    // [요소기술 1] 전처리: 연산량 축소, 조명 보정 및 노이즈 제거
+    // RGB 3채널 영상이면 1채널 Grayscale로 변환하고, 단일 Y 채널 입력이면 그대로 사용함.
+    Mat img_gray, img_normalized, img_blur, img_edge;
     if (img_input.channels() >= 3) cvtColor(img_input, img_gray, COLOR_RGBA2GRAY);
     else img_gray = img_input.clone();
 
+    // [조명 정규화] 큰 스케일의 밝기 배경을 제거하여 나무 그림자나 햇빛 편차가
+    // Canny Edge 단계에서 거대한 가짜 경계로 증폭되는 현상을 완화함.
+    img_normalized = normalizeIllumination(img_gray);
+
     // Low-pass Filter(가우시안 블러)를 적용하여 일반 아스팔트의 자글자글한 고주파 노이즈를 1차적으로 소거.
-    GaussianBlur(img_gray, img_blur, Size(5, 5), 0);
+    GaussianBlur(img_normalized, img_blur, Size(5, 5), 0);
 
     // [특징 추출] Canny Edge 문턱값(Threshold) 하드코딩의 공학적 이유:
     // 일반적인 바닥의 그림자나 옅은 얼룩(Low-magnitude)은 무시하고, 점자 블록처럼 명암 대비가 확실한
