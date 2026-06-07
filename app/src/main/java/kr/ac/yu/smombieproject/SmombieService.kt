@@ -3,13 +3,13 @@ package kr.ac.yu.smombieproject
 import android.app.*
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.os.*
 import androidx.camera.core.ImageProxy
 import androidx.camera.view.PreviewView
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import org.opencv.android.Utils
+import org.opencv.core.Core
 import org.opencv.core.Mat
 import java.util.concurrent.Executors
 
@@ -84,52 +84,63 @@ class SmombieService : LifecycleService() {
     }
 
     private fun processImage(image: ImageProxy) {
-        val mat = ImageUtil.getMatFromImageProxy(image)
-        val activeDebugMode = debugMode
-        val activeCallback = callback
-        val result = if (activeDebugMode == DEBUG_VIEW_CAMERA || activeCallback == null) {
-            nativeProcessor.processFrame(mat.nativeObjAddr)
-        } else {
-            val debugMat = Mat()
-            val debugResult = nativeProcessor.processDebugFrame(
-                mat.nativeObjAddr,
-                debugMat.nativeObjAddr,
-                activeDebugMode
-            )
-            if (!debugMat.empty()) {
-                val bitmap = Bitmap.createBitmap(debugMat.cols(), debugMat.rows(), Bitmap.Config.ARGB_8888)
-                Utils.matToBitmap(debugMat, bitmap)
-                activeCallback.onDebugFrameUpdated(rotateBitmapIfNeeded(bitmap, image.imageInfo.rotationDegrees))
+        val rawMat = ImageUtil.getMatFromImageProxy(image)
+        val analysisMat = rotateMatIfNeeded(rawMat, image.imageInfo.rotationDegrees)
+
+        try {
+            val activeDebugMode = debugMode
+            val activeCallback = callback
+            val result = if (activeDebugMode == DEBUG_VIEW_CAMERA || activeCallback == null) {
+                nativeProcessor.processFrame(analysisMat.nativeObjAddr)
+            } else {
+                val debugMat = Mat()
+                val debugResult = nativeProcessor.processDebugFrame(
+                    analysisMat.nativeObjAddr,
+                    debugMat.nativeObjAddr,
+                    activeDebugMode
+                )
+                if (!debugMat.empty()) {
+                    val bitmap = Bitmap.createBitmap(debugMat.cols(), debugMat.rows(), Bitmap.Config.ARGB_8888)
+                    Utils.matToBitmap(debugMat, bitmap)
+                    activeCallback.onDebugFrameUpdated(bitmap)
+                }
+                debugMat.release()
+                debugResult
             }
-            debugMat.release()
-            debugResult
+
+            val objectType = (result / 1000000).toInt()
+            val area = result % 1000000
+
+            val isDangerous = area > 3500.0
+            val hazardousResult = stateBuffer.isHazardous(isDangerous)
+
+            // Notify Activity if attached
+            callback?.onDataUpdated(area, hazardousResult, objectType)
+
+            if (hazardousResult) {
+                triggerAlert(objectType)
+            }
+        } finally {
+            if (analysisMat !== rawMat) {
+                analysisMat.release()
+            }
+            rawMat.release()
+            image.close()
         }
-        
-        val objectType = (result / 1000000).toInt()
-        val area = result % 1000000
-
-        val isDangerous = area > 3500.0
-        val hazardousResult = stateBuffer.isHazardous(isDangerous)
-
-        // Notify Activity if attached
-        callback?.onDataUpdated(area, hazardousResult, objectType)
-
-        if (hazardousResult) {
-            triggerAlert(objectType)
-        }
-
-        mat.release()
-        image.close()
     }
 
-    private fun rotateBitmapIfNeeded(bitmap: Bitmap, rotationDegrees: Int): Bitmap {
-        if (rotationDegrees == 0) return bitmap
+    private fun rotateMatIfNeeded(mat: Mat, rotationDegrees: Int): Mat {
+        val normalizedDegrees = ((rotationDegrees % 360) + 360) % 360
+        if (normalizedDegrees == 0) return mat
 
-        val matrix = Matrix().apply {
-            postRotate(rotationDegrees.toFloat())
+        val rotated = Mat()
+        when (normalizedDegrees) {
+            90 -> Core.rotate(mat, rotated, Core.ROTATE_90_CLOCKWISE)
+            180 -> Core.rotate(mat, rotated, Core.ROTATE_180)
+            270 -> Core.rotate(mat, rotated, Core.ROTATE_90_COUNTERCLOCKWISE)
+            else -> return mat
         }
-        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        bitmap.recycle()
+
         return rotated
     }
 
