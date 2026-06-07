@@ -25,6 +25,12 @@ class NativeProcessor {
      * 이 결과는 이후 [요소기술 2-2] 시계열 알고리즘의 입력 데이터로 활용됨.
      */
     external fun processFrame(matAddr: Long): Double
+
+    /**
+     * Runs the same native analysis pipeline and copies a selected intermediate
+     * image into outputMatAddr for the developer debug overlay.
+     */
+    external fun processDebugFrame(matAddr: Long, outputMatAddr: Long, debugMode: Int): Double
 }
 
 /**

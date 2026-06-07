@@ -2,8 +2,10 @@ package kr.ac.yu.smombieproject
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.*
 import android.util.Log
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -24,6 +26,17 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
     private lateinit var tvBufferData: android.widget.TextView
     private lateinit var statusCard: com.google.android.material.card.MaterialCardView
     private lateinit var btnStopService: com.google.android.material.button.MaterialButton
+    private lateinit var btnDebugView: com.google.android.material.button.MaterialButton
+    private lateinit var ivDebugFrame: android.widget.ImageView
+
+    private val debugModes = intArrayOf(
+        SmombieService.DEBUG_VIEW_CAMERA,
+        SmombieService.DEBUG_VIEW_CANNY,
+        SmombieService.DEBUG_VIEW_ROI_EDGE,
+        SmombieService.DEBUG_VIEW_MORPHOLOGY
+    )
+    private val debugLabels = arrayOf("CAMERA", "CANNY", "ROI EDGE", "MORPH")
+    private var debugModeIndex = 0
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -46,10 +59,16 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         tvBufferData = findViewById(R.id.tvBufferData)
         statusCard = findViewById(R.id.statusCard)
         btnStopService = findViewById(R.id.btnStopService)
+        btnDebugView = findViewById(R.id.btnDebugView)
+        ivDebugFrame = findViewById(R.id.ivDebugFrame)
 
         btnStopService.setOnClickListener {
             stopSmombieService()
         }
+        btnDebugView.setOnClickListener {
+            cycleDebugView()
+        }
+        applyDebugViewMode()
 
         if (!OpenCVLoader.initDebug()) Log.e("Smombie", "OpenCV init failed.")
 
@@ -74,6 +93,7 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         // Link UI components to the service
         SmombieService.setPreview(viewFinder)
         SmombieService.setListener(this)
+        SmombieService.setDebugMode(debugModes[debugModeIndex])
     }
 
     private fun stopSmombieService() {
@@ -86,6 +106,7 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         super.onStart()
         SmombieService.setPreview(viewFinder)
         SmombieService.setListener(this)
+        SmombieService.setDebugMode(debugModes[debugModeIndex])
     }
 
     override fun onStop() {
@@ -93,10 +114,37 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         // Stop UI updates but service keeps running camera analysis
         SmombieService.setPreview(null)
         SmombieService.setListener(null)
+        ivDebugFrame.setImageDrawable(null)
     }
 
     override fun onDataUpdated(area: Double, isHazardous: Boolean, type: Int) {
         runOnUiThread { updateUI(area, isHazardous, type) }
+    }
+
+    override fun onDebugFrameUpdated(bitmap: Bitmap?) {
+        runOnUiThread {
+            if (debugModes[debugModeIndex] == SmombieService.DEBUG_VIEW_CAMERA || bitmap == null) {
+                ivDebugFrame.setImageDrawable(null)
+            } else {
+                ivDebugFrame.setImageBitmap(bitmap)
+            }
+        }
+    }
+
+    private fun cycleDebugView() {
+        debugModeIndex = (debugModeIndex + 1) % debugModes.size
+        applyDebugViewMode()
+        SmombieService.setDebugMode(debugModes[debugModeIndex])
+    }
+
+    private fun applyDebugViewMode() {
+        btnDebugView.text = debugLabels[debugModeIndex]
+        if (debugModes[debugModeIndex] == SmombieService.DEBUG_VIEW_CAMERA) {
+            ivDebugFrame.visibility = View.GONE
+            ivDebugFrame.setImageDrawable(null)
+        } else {
+            ivDebugFrame.visibility = View.VISIBLE
+        }
     }
 
     private fun updateUI(area: Double, isHazardous: Boolean, type: Int) {

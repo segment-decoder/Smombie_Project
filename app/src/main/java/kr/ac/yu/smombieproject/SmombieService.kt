@@ -2,11 +2,15 @@ package kr.ac.yu.smombieproject
 
 import android.app.*
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.os.*
 import androidx.camera.core.ImageProxy
 import androidx.camera.view.PreviewView
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
+import org.opencv.android.Utils
+import org.opencv.core.Mat
 import java.util.concurrent.Executors
 
 /**
@@ -24,15 +28,23 @@ class SmombieService : LifecycleService() {
     private lateinit var cameraManager: CameraManager
     private val nativeProcessor = NativeProcessor()
     private val stateBuffer = TimeStateBuffer(capacity = 8, threshold = 5)
+    @Volatile
+    private var debugMode: Int = DEBUG_VIEW_CAMERA
 
     // Bridge for UI communication
     interface ServiceCallback {
         fun onDataUpdated(area: Double, isHazardous: Boolean, type: Int)
+        fun onDebugFrameUpdated(bitmap: Bitmap?) {}
     }
     
     private var callback: ServiceCallback? = null
 
     companion object {
+        const val DEBUG_VIEW_CAMERA = 0
+        const val DEBUG_VIEW_CANNY = 1
+        const val DEBUG_VIEW_ROI_EDGE = 2
+        const val DEBUG_VIEW_MORPHOLOGY = 3
+
         private var instance: SmombieService? = null
         
         fun setPreview(view: PreviewView?) {
@@ -41,6 +53,10 @@ class SmombieService : LifecycleService() {
         
         fun setListener(cb: ServiceCallback?) {
             instance?.callback = cb
+        }
+
+        fun setDebugMode(mode: Int) {
+            instance?.debugMode = mode
         }
     }
 
@@ -69,7 +85,25 @@ class SmombieService : LifecycleService() {
 
     private fun processImage(image: ImageProxy) {
         val mat = ImageUtil.getMatFromImageProxy(image)
-        val result = nativeProcessor.processFrame(mat.nativeObjAddr)
+        val activeDebugMode = debugMode
+        val activeCallback = callback
+        val result = if (activeDebugMode == DEBUG_VIEW_CAMERA || activeCallback == null) {
+            nativeProcessor.processFrame(mat.nativeObjAddr)
+        } else {
+            val debugMat = Mat()
+            val debugResult = nativeProcessor.processDebugFrame(
+                mat.nativeObjAddr,
+                debugMat.nativeObjAddr,
+                activeDebugMode
+            )
+            if (!debugMat.empty()) {
+                val bitmap = Bitmap.createBitmap(debugMat.cols(), debugMat.rows(), Bitmap.Config.ARGB_8888)
+                Utils.matToBitmap(debugMat, bitmap)
+                activeCallback.onDebugFrameUpdated(rotateBitmapIfNeeded(bitmap, image.imageInfo.rotationDegrees))
+            }
+            debugMat.release()
+            debugResult
+        }
         
         val objectType = (result / 1000000).toInt()
         val area = result % 1000000
@@ -86,6 +120,17 @@ class SmombieService : LifecycleService() {
 
         mat.release()
         image.close()
+    }
+
+    private fun rotateBitmapIfNeeded(bitmap: Bitmap, rotationDegrees: Int): Bitmap {
+        if (rotationDegrees == 0) return bitmap
+
+        val matrix = Matrix().apply {
+            postRotate(rotationDegrees.toFloat())
+        }
+        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        bitmap.recycle()
+        return rotated
     }
 
     private fun triggerAlert(type: Int) {

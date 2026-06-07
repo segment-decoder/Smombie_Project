@@ -6,6 +6,11 @@
 using namespace cv;
 using namespace std;
 
+static const int DEBUG_VIEW_NONE = 0;
+static const int DEBUG_VIEW_CANNY = 1;
+static const int DEBUG_VIEW_ROI_EDGE = 2;
+static const int DEBUG_VIEW_MORPHOLOGY = 3;
+
 /**
  * Suppresses broad illumination changes such as shadows before edge extraction.
  * The camera input is a single Y-channel grayscale frame, so this estimates the
@@ -34,13 +39,7 @@ static Mat normalizeIllumination(const Mat& gray) {
     return normalized;
 }
 
-extern "C"
-JNIEXPORT jdouble JNICALL
-Java_kr_ac_yu_smombieproject_NativeProcessor_processFrame(
-        JNIEnv *env, jobject thiz, jlong matAddrInput) {
-
-    // [메모리 접근] JNI 포인터를 통해 Kotlin에서 넘어온 카메라 프레임 메모리에 직접 접근(Zero-copy)
-    Mat &img_input = *(Mat *) matAddrInput;
+static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
     if (img_input.empty()) return 0.0;
 
     int width = img_input.cols;
@@ -88,6 +87,16 @@ Java_kr_ac_yu_smombieproject_NativeProcessor_processFrame(
     Mat kernel = getStructuringElement(MORPH_RECT, Size(25, 25));
     morphologyEx(masked_edge, img_morph, MORPH_CLOSE, kernel);
 
+    if (debugOutput != nullptr) {
+        if (debugMode == DEBUG_VIEW_CANNY) {
+            img_edge.copyTo(*debugOutput);
+        } else if (debugMode == DEBUG_VIEW_ROI_EDGE) {
+            masked_edge.copyTo(*debugOutput);
+        } else if (debugMode == DEBUG_VIEW_MORPHOLOGY) {
+            img_morph.copyTo(*debugOutput);
+        }
+    }
+
     // 기하학적 면적(Area) 산출 로직
     vector<vector<Point>> contours;
     findContours(img_morph, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
@@ -100,7 +109,28 @@ Java_kr_ac_yu_smombieproject_NativeProcessor_processFrame(
     }
 
     // 이 maxArea(단일 스칼라 값)는 Kotlin의 [요소기술 2-2: 시계열 버퍼]로 넘어가서 최종 위험 판단의 재료로 사용됨.
-    return (jdouble)maxArea;
+    return maxArea;
+}
+
+extern "C"
+JNIEXPORT jdouble JNICALL
+Java_kr_ac_yu_smombieproject_NativeProcessor_processFrame(
+        JNIEnv *env, jobject thiz, jlong matAddrInput) {
+
+    // [메모리 접근] JNI 포인터를 통해 Kotlin에서 넘어온 카메라 프레임 메모리에 직접 접근(Zero-copy)
+    Mat &img_input = *(Mat *) matAddrInput;
+    return (jdouble) analyzeFrame(img_input, nullptr, DEBUG_VIEW_NONE);
+}
+
+extern "C"
+JNIEXPORT jdouble JNICALL
+Java_kr_ac_yu_smombieproject_NativeProcessor_processDebugFrame(
+        JNIEnv *env, jobject thiz, jlong matAddrInput, jlong matAddrOutput, jint debugMode) {
+
+    Mat &img_input = *(Mat *) matAddrInput;
+    Mat &img_output = *(Mat *) matAddrOutput;
+
+    return (jdouble) analyzeFrame(img_input, &img_output, debugMode);
 }
 /*
  *저희 엔진은 철저히 모바일 환경의 최적화를 고려해 설계되었습니다.

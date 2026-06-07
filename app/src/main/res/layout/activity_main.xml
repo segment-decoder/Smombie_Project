@@ -18,6 +18,19 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- [Debug View] Canny / ROI Edge / Morphology intermediate frame overlay -->
+    <ImageView
+        android:id="@+id/ivDebugFrame"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#000000"
+        android:scaleType="fitCenter"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- [요소기술 2-1] ROI 가이드라인 오버레이 (사다리꼴) -->
     <View
         android:id="@+id/roiGuide"
@@ -94,5 +107,19 @@
         app:layout_constraintBottom_toTopOf="@id/dataPanel"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
+
+    <!-- [Debug Control] Cycle Camera / Canny / ROI Edge / Morphology views -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnDebugView"
+        android:layout_width="96dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="12dp"
+        android:text="CAMERA"
+        android:textSize="11sp"
+        app:backgroundTint="#AA263238"
+        app:cornerRadius="16dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>
