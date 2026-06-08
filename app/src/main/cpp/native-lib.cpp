@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <opencv2/opencv.hpp>
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 using namespace cv;
@@ -10,6 +11,13 @@ static const int DEBUG_VIEW_NONE = 0;
 static const int DEBUG_VIEW_CANNY = 1;
 static const int DEBUG_VIEW_ROI_EDGE = 2;
 static const int DEBUG_VIEW_MORPHOLOGY = 3;
+
+static const double MIN_CONTOUR_AREA_RATIO_TO_ROI = 0.0015;
+static const double MIN_CONTOUR_AREA_PX = 200.0;
+static const double MAX_CONTOUR_AREA_RATIO_TO_ROI = 0.55;
+static const double MAX_THIN_CONTOUR_ASPECT_RATIO = 8.0;
+static const double MIN_CONTOUR_EXTENT = 0.14;
+static const double MIN_CONTOUR_CENTER_Y_RATIO = 0.48;
 
 /**
  * Suppresses broad illumination changes such as shadows before edge extraction.
@@ -37,6 +45,42 @@ static Mat normalizeIllumination(const Mat& gray) {
     Mat normalized;
     reflectance.convertTo(normalized, CV_8UC1);
     return normalized;
+}
+
+static bool isValidHazardContour(
+        const vector<Point>& contour,
+        double area,
+        double roiArea,
+        int frameHeight
+) {
+    double minArea = max(MIN_CONTOUR_AREA_PX, roiArea * MIN_CONTOUR_AREA_RATIO_TO_ROI);
+    if (area < minArea) return false;
+    if (area > roiArea * MAX_CONTOUR_AREA_RATIO_TO_ROI) return false;
+
+    Rect box = boundingRect(contour);
+    if (box.width <= 0 || box.height <= 0) return false;
+
+    double minSide = max(1.0, static_cast<double>(min(box.width, box.height)));
+    double maxSide = static_cast<double>(max(box.width, box.height));
+    double aspectRatio = maxSide / minSide;
+
+    double boundingArea = max(1.0, static_cast<double>(box.area()));
+    double extent = area / boundingArea;
+
+    // 보도블럭 줄눈, 그림자 경계, 도로 차선처럼 길고 얇은 선형 신호는
+    // 실제 부피를 가진 위험 후보보다 bounding box 내부가 비어 있는 경우가 많음.
+    if (aspectRatio > MAX_THIN_CONTOUR_ASPECT_RATIO && extent < 0.35) return false;
+
+    // 넓은 사각형 안에 엣지만 듬성듬성 있는 패턴성 바닥 신호를 제거함.
+    if (extent < MIN_CONTOUR_EXTENT) return false;
+
+    Moments m = moments(contour);
+    if (fabs(m.m00) < 1e-5) return false;
+
+    double centerY = m.m01 / m.m00;
+    if (centerY < frameHeight * MIN_CONTOUR_CENTER_Y_RATIO) return false;
+
+    return true;
 }
 
 static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
@@ -73,6 +117,7 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
             Point(width * 0.70, height * 0.50),
             Point(width * 0.30, height * 0.50)
     };
+    double roiArea = contourArea(roi_points);
     fillPoly(mask, {roi_points}, Scalar(255));
 
     // 추출된 전체 엣지 영상에 사다리꼴 마스크를 씌워 불필요한 엣지를 제거
@@ -101,10 +146,12 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
     vector<vector<Point>> contours;
     findContours(img_morph, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
-    // 화면(사다리꼴 내부)에 존재하는 여러 덩어리 중, 가장 거대한(위협적인) 덩어리의 면적만 추출.
+    // 화면(사다리꼴 내부)에 존재하는 여러 덩어리 중,
+    // 노이즈 필터를 통과한 가장 거대한(위협적인) 덩어리의 면적만 추출.
     double maxArea = 0;
     for (const auto& contour : contours) {
         double area = contourArea(contour);
+        if (!isValidHazardContour(contour, area, roiArea, height)) continue;
         if (area > maxArea) maxArea = area;
     }
 
