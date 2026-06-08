@@ -1,11 +1,18 @@
 package kr.ac.yu.smombieproject
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.*
 import android.util.Log
 import android.view.View
+import android.view.inputmethod.InputMethodManager
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.EditText
+import android.widget.Spinner
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -13,6 +20,7 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import org.opencv.android.OpenCVLoader
 import java.util.*
+import kotlin.math.roundToInt
 
 /**
  * [Software Tech: UI Layer]
@@ -28,6 +36,14 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
     private lateinit var btnStopService: com.google.android.material.button.MaterialButton
     private lateinit var btnDebugView: com.google.android.material.button.MaterialButton
     private lateinit var ivDebugFrame: android.widget.ImageView
+    private lateinit var spinnerTuningParam: Spinner
+    private lateinit var etTuningValue: EditText
+    private lateinit var btnApplyTuning: com.google.android.material.button.MaterialButton
+    private lateinit var tvTuningFeedback: TextView
+
+    private val tuningPrefs by lazy {
+        getSharedPreferences(TuningParameters.PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     private val debugModes = intArrayOf(
         SmombieService.DEBUG_VIEW_CAMERA,
@@ -61,6 +77,10 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         btnStopService = findViewById(R.id.btnStopService)
         btnDebugView = findViewById(R.id.btnDebugView)
         ivDebugFrame = findViewById(R.id.ivDebugFrame)
+        spinnerTuningParam = findViewById(R.id.spinnerTuningParam)
+        etTuningValue = findViewById(R.id.etTuningValue)
+        btnApplyTuning = findViewById(R.id.btnApplyTuning)
+        tvTuningFeedback = findViewById(R.id.tvTuningFeedback)
 
         btnStopService.setOnClickListener {
             stopSmombieService()
@@ -69,6 +89,7 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
             cycleDebugView()
         }
         applyDebugViewMode()
+        setupTuningUi()
 
         if (!OpenCVLoader.initDebug()) Log.e("Smombie", "OpenCV init failed.")
 
@@ -94,6 +115,7 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         SmombieService.setPreview(viewFinder)
         SmombieService.setListener(this)
         SmombieService.setDebugMode(debugModes[debugModeIndex])
+        applySavedTuningValuesToRuntime()
     }
 
     private fun stopSmombieService() {
@@ -107,6 +129,7 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         SmombieService.setPreview(viewFinder)
         SmombieService.setListener(this)
         SmombieService.setDebugMode(debugModes[debugModeIndex])
+        applySavedTuningValuesToRuntime()
     }
 
     override fun onStop() {
@@ -129,6 +152,94 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
                 ivDebugFrame.setImageBitmap(bitmap)
             }
         }
+    }
+
+    override fun onBufferUpdated(bufferState: String) {
+        runOnUiThread {
+            tvBufferData.text = String.format(Locale.US, "Hazard Buffer: %s", bufferState)
+        }
+    }
+
+    private fun setupTuningUi() {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            TuningParameters.all.map { it.label }
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinnerTuningParam.adapter = adapter
+        spinnerTuningParam.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                updateTuningInput(position)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+
+        btnApplyTuning.setOnClickListener {
+            applySelectedTuningValue()
+        }
+
+        updateTuningInput(0)
+    }
+
+    private fun updateTuningInput(position: Int) {
+        val parameter = TuningParameters.all.getOrNull(position) ?: return
+        val value = getStoredTuningValue(parameter)
+        val formattedValue = formatTuningValue(parameter, value)
+        etTuningValue.setText(formattedValue)
+        etTuningValue.setSelection(etTuningValue.text.length)
+        tvTuningFeedback.text = String.format(Locale.US, "%s = %s", parameter.label, formattedValue)
+    }
+
+    private fun applySelectedTuningValue() {
+        val position = spinnerTuningParam.selectedItemPosition
+        val parameter = TuningParameters.all.getOrNull(position) ?: return
+        val requestedValue = etTuningValue.text.toString().trim().toDoubleOrNull()
+
+        if (requestedValue == null) {
+            Toast.makeText(this, "Enter a number.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val sanitizedValue = TuningParameters.sanitize(parameter, requestedValue)
+        val runtimeValue = SmombieService.applyTuningValue(parameter.id, sanitizedValue) ?: sanitizedValue
+        val formattedValue = formatTuningValue(parameter, runtimeValue)
+
+        tuningPrefs.edit()
+            .putString(TuningParameters.key(parameter), runtimeValue.toString())
+            .apply()
+
+        etTuningValue.setText(formattedValue)
+        etTuningValue.setSelection(etTuningValue.text.length)
+        tvTuningFeedback.text = String.format(Locale.US, "%s = %s", parameter.label, formattedValue)
+        hideKeyboard()
+    }
+
+    private fun applySavedTuningValuesToRuntime() {
+        for (parameter in TuningParameters.all) {
+            SmombieService.applyTuningValue(parameter.id, getStoredTuningValue(parameter))
+        }
+    }
+
+    private fun getStoredTuningValue(parameter: TuningParameter): Double {
+        return tuningPrefs.getString(TuningParameters.key(parameter), null)
+            ?.toDoubleOrNull()
+            ?: parameter.defaultValue
+    }
+
+    private fun formatTuningValue(parameter: TuningParameter, value: Double): String {
+        if (parameter.integerOnly) return value.roundToInt().toString()
+
+        return String.format(Locale.US, "%.4f", value)
+            .trimEnd('0')
+            .trimEnd('.')
+    }
+
+    private fun hideKeyboard() {
+        val inputMethodManager = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        inputMethodManager.hideSoftInputFromWindow(etTuningValue.windowToken, 0)
+        etTuningValue.clearFocus()
     }
 
     private fun cycleDebugView() {

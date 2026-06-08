@@ -31,6 +31,10 @@ class NativeProcessor {
      * image into outputMatAddr for the developer debug overlay.
      */
     external fun processDebugFrame(matAddr: Long, outputMatAddr: Long, debugMode: Int): Double
+
+    external fun setNativeTuningValue(parameterId: Int, value: Double): Double
+
+    external fun getNativeTuningValue(parameterId: Int): Double
 }
 
 /**

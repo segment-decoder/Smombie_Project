@@ -1,6 +1,7 @@
 package kr.ac.yu.smombieproject
 
 import android.app.*
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.*
@@ -12,6 +13,7 @@ import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.Mat
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 /**
  * [Software Tech: Background Intelligence Core]
@@ -27,7 +29,12 @@ class SmombieService : LifecycleService() {
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private lateinit var cameraManager: CameraManager
     private val nativeProcessor = NativeProcessor()
-    private val stateBuffer = TimeStateBuffer(capacity = 8, threshold = 5)
+    private val tuningLock = Any()
+    private var bufferCapacity = defaultTuningValue(TuningParameterIds.BUFFER_CAPACITY).roundToInt()
+    private var bufferThreshold = defaultTuningValue(TuningParameterIds.BUFFER_THRESHOLD).roundToInt()
+    private var stateBuffer = TimeStateBuffer(capacity = bufferCapacity, threshold = bufferThreshold)
+    @Volatile
+    private var dangerAreaThreshold = defaultTuningValue(TuningParameterIds.DANGER_AREA_THRESHOLD)
     @Volatile
     private var debugMode: Int = DEBUG_VIEW_CAMERA
 
@@ -35,6 +42,7 @@ class SmombieService : LifecycleService() {
     interface ServiceCallback {
         fun onDataUpdated(area: Double, isHazardous: Boolean, type: Int)
         fun onDebugFrameUpdated(bitmap: Bitmap?) {}
+        fun onBufferUpdated(bufferState: String) {}
     }
     
     private var callback: ServiceCallback? = null
@@ -58,6 +66,10 @@ class SmombieService : LifecycleService() {
         fun setDebugMode(mode: Int) {
             instance?.debugMode = mode
         }
+
+        fun applyTuningValue(parameterId: Int, value: Double): Double? {
+            return instance?.applyTuningValue(parameterId, value)
+        }
     }
 
     override fun onCreate() {
@@ -77,6 +89,7 @@ class SmombieService : LifecycleService() {
             processImage(imageProxy)
         }
 
+        applySavedTuningValues()
         createNotificationChannel()
         startForeground(notificationId, buildNotification("Radar is scanning for hazards..."))
         
@@ -111,11 +124,17 @@ class SmombieService : LifecycleService() {
             val objectType = (result / 1000000).toInt()
             val area = result % 1000000
 
-            val isDangerous = area > 3500.0
-            val hazardousResult = stateBuffer.isHazardous(isDangerous)
+            val isDangerous = area > dangerAreaThreshold
+            val bufferResult = synchronized(tuningLock) {
+                val hazardous = stateBuffer.isHazardous(isDangerous)
+                hazardous to stateBuffer.getBufferString()
+            }
+            val hazardousResult = bufferResult.first
+            val bufferState = bufferResult.second
 
             // Notify Activity if attached
             callback?.onDataUpdated(area, hazardousResult, objectType)
+            callback?.onBufferUpdated(bufferState)
 
             if (hazardousResult) {
                 triggerAlert(objectType)
@@ -142,6 +161,51 @@ class SmombieService : LifecycleService() {
         }
 
         return rotated
+    }
+
+    private fun applySavedTuningValues() {
+        val prefs = getSharedPreferences(TuningParameters.PREFS_NAME, Context.MODE_PRIVATE)
+        for (parameter in TuningParameters.all) {
+            val savedValue = prefs.getString(TuningParameters.key(parameter), null)
+                ?.toDoubleOrNull()
+                ?: parameter.defaultValue
+            applyTuningValue(parameter.id, savedValue)
+        }
+    }
+
+    private fun applyTuningValue(parameterId: Int, value: Double): Double {
+        val parameter = TuningParameters.find(parameterId) ?: return 0.0
+        val sanitizedValue = TuningParameters.sanitize(parameter, value)
+
+        return when (parameter.scope) {
+            TuningScope.NATIVE -> nativeProcessor.setNativeTuningValue(parameterId, sanitizedValue)
+            TuningScope.SERVICE -> applyServiceTuningValue(parameterId, sanitizedValue)
+        }
+    }
+
+    private fun applyServiceTuningValue(parameterId: Int, value: Double): Double {
+        return when (parameterId) {
+            TuningParameterIds.DANGER_AREA_THRESHOLD -> {
+                dangerAreaThreshold = value.coerceAtLeast(0.0)
+                dangerAreaThreshold
+            }
+            TuningParameterIds.BUFFER_CAPACITY -> synchronized(tuningLock) {
+                bufferCapacity = value.roundToInt().coerceIn(1, 30)
+                if (bufferThreshold > bufferCapacity) bufferThreshold = bufferCapacity
+                resetStateBuffer()
+                bufferCapacity.toDouble()
+            }
+            TuningParameterIds.BUFFER_THRESHOLD -> synchronized(tuningLock) {
+                bufferThreshold = value.roundToInt().coerceIn(1, bufferCapacity)
+                resetStateBuffer()
+                bufferThreshold.toDouble()
+            }
+            else -> value
+        }
+    }
+
+    private fun resetStateBuffer() {
+        stateBuffer = TimeStateBuffer(capacity = bufferCapacity, threshold = bufferThreshold)
     }
 
     private fun triggerAlert(type: Int) {
@@ -215,5 +279,9 @@ class SmombieService : LifecycleService() {
         super.onDestroy()
         instance = null
         cameraExecutor.shutdown()
+    }
+
+    private fun defaultTuningValue(parameterId: Int): Double {
+        return TuningParameters.find(parameterId)?.defaultValue ?: 0.0
     }
 }
