@@ -181,7 +181,60 @@ class SmombieService : LifecycleService() {
         return when (parameter.scope) {
             TuningScope.NATIVE -> nativeProcessor.setNativeTuningValue(parameterId, sanitizedValue)
             TuningScope.SERVICE -> applyServiceTuningValue(parameterId, sanitizedValue)
+            TuningScope.COMPOSITE -> applyCompositeTuningValue(parameterId, sanitizedValue)
         }
+    }
+
+    private fun applyCompositeTuningValue(parameterId: Int, value: Double): Double {
+        val strength = value.coerceIn(0.0, 1.0)
+
+        return when (parameterId) {
+            TuningParameterIds.CONTOUR_FILTER_STRENGTH -> {
+                applyContourFilterStrength(strength)
+                strength
+            }
+            TuningParameterIds.FOOT_FILTER_STRENGTH -> {
+                applyFootFilterStrength(strength)
+                strength
+            }
+            else -> strength
+        }
+    }
+
+    private fun applyContourFilterStrength(strength: Double) {
+        nativeProcessor.setNativeTuningValue(TuningParameterIds.MIN_CONTOUR_AREA_PX, 200.0)
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.MIN_CONTOUR_AREA_RATIO_TO_ROI,
+            0.0005 + (0.0020 * strength)
+        )
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.MAX_CONTOUR_AREA_RATIO_TO_ROI,
+            0.75 - (0.40 * strength)
+        )
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.MAX_THIN_CONTOUR_ASPECT_RATIO,
+            12.0 - (8.0 * strength)
+        )
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.MIN_CONTOUR_EXTENT,
+            0.08 + (0.12 * strength)
+        )
+        nativeProcessor.setNativeTuningValue(TuningParameterIds.MIN_CONTOUR_CENTER_Y_RATIO, 0.48)
+    }
+
+    private fun applyFootFilterStrength(strength: Double) {
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.FOOT_BOTTOM_TOUCH_RATIO,
+            0.98 - (0.08 * strength)
+        )
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.FOOT_CENTER_Y_RATIO,
+            0.82 - (0.20 * strength)
+        )
+        nativeProcessor.setNativeTuningValue(
+            TuningParameterIds.FOOT_MAX_HEIGHT_RATIO,
+            0.20 + (0.24 * strength)
+        )
     }
 
     private fun applyServiceTuningValue(parameterId: Int, value: Double): Double {
@@ -283,6 +336,6 @@ class SmombieService : LifecycleService() {
     }
 
     private fun defaultTuningValue(parameterId: Int): Double {
-        return TuningParameters.find(parameterId)?.defaultValue ?: 0.0
+        return TuningParameters.defaultValue(parameterId)
     }
 }
