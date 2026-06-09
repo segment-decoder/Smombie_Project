@@ -20,8 +20,8 @@ class NativeProcessor {
      * [신호처리 파이프라인 호출] C++로 작성된 영상 분석 로직을 실행합니다.
      * * @param matAddr CameraX로부터 수신한 OpenCV Mat 객체의 메모리 주소(Pointer Address).
      * 객체 전체를 전달하지 않고 주소값만 전달하여 메모리 복사 비용을 최적화함.
-     * * @return [요소기술 1]의 형태학적 필터링(Morphology)을 거쳐 최종 산출된
-     * 장애물 특징점의 최대 픽셀 면적(Max Area).
+     * * @return [요소기술 1]의 형태학적 필터링(Morphology) 면적과
+     * ROI 컨투어 보조 점수를 합성한 최종 위험도 점수(Hazard Score).
      * 이 결과는 이후 [요소기술 2-2] 시계열 알고리즘의 입력 데이터로 활용됨.
      */
     external fun processFrame(matAddr: Long): Double

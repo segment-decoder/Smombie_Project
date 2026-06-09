@@ -34,13 +34,13 @@ class SmombieService : LifecycleService() {
     private var bufferThreshold = defaultTuningValue(TuningParameterIds.BUFFER_THRESHOLD).roundToInt()
     private var stateBuffer = TimeStateBuffer(capacity = bufferCapacity, threshold = bufferThreshold)
     @Volatile
-    private var dangerAreaThreshold = defaultTuningValue(TuningParameterIds.DANGER_AREA_THRESHOLD)
+    private var dangerScoreThreshold = defaultTuningValue(TuningParameterIds.DANGER_AREA_THRESHOLD)
     @Volatile
     private var debugMode: Int = DEBUG_VIEW_CAMERA
 
     // Bridge for UI communication
     interface ServiceCallback {
-        fun onDataUpdated(area: Double, isHazardous: Boolean, type: Int)
+        fun onDataUpdated(score: Double, isHazardous: Boolean, type: Int)
         fun onDebugFrameUpdated(bitmap: Bitmap?) {}
         fun onBufferUpdated(bufferState: String) {}
     }
@@ -53,6 +53,7 @@ class SmombieService : LifecycleService() {
         const val DEBUG_VIEW_CANNY = 2
         const val DEBUG_VIEW_ROI_EDGE = 3
         const val DEBUG_VIEW_MORPHOLOGY = 4
+        private const val RESULT_SCORE_MODULUS = 1000000.0
 
         private var instance: SmombieService? = null
         
@@ -122,19 +123,19 @@ class SmombieService : LifecycleService() {
                 debugResult
             }
 
-            val objectType = (result / 1000000).toInt()
-            val area = result % 1000000
+            val objectType = (result / RESULT_SCORE_MODULUS).toInt()
+            val hazardScore = result % RESULT_SCORE_MODULUS
 
-            val isDangerous = area > dangerAreaThreshold
+            val isCautionFrame = hazardScore > dangerScoreThreshold
             val bufferResult = synchronized(tuningLock) {
-                val hazardous = stateBuffer.isHazardous(isDangerous)
+                val hazardous = stateBuffer.isHazardous(isCautionFrame)
                 hazardous to stateBuffer.getBufferString()
             }
             val hazardousResult = bufferResult.first
             val bufferState = bufferResult.second
 
             // Notify Activity if attached
-            callback?.onDataUpdated(area, hazardousResult, objectType)
+            callback?.onDataUpdated(hazardScore, hazardousResult, objectType)
             callback?.onBufferUpdated(bufferState)
 
             if (hazardousResult) {
@@ -202,6 +203,7 @@ class SmombieService : LifecycleService() {
     }
 
     private fun applyContourFilterStrength(strength: Double) {
+        nativeProcessor.setNativeTuningValue(TuningParameterIds.NATIVE_CONTOUR_FILTER_STRENGTH, strength)
         nativeProcessor.setNativeTuningValue(TuningParameterIds.MIN_CONTOUR_AREA_PX, 200.0)
         nativeProcessor.setNativeTuningValue(
             TuningParameterIds.MIN_CONTOUR_AREA_RATIO_TO_ROI,
@@ -240,8 +242,8 @@ class SmombieService : LifecycleService() {
     private fun applyServiceTuningValue(parameterId: Int, value: Double): Double {
         return when (parameterId) {
             TuningParameterIds.DANGER_AREA_THRESHOLD -> {
-                dangerAreaThreshold = value.coerceAtLeast(0.0)
-                dangerAreaThreshold
+                dangerScoreThreshold = value.coerceAtLeast(0.0)
+                dangerScoreThreshold
             }
             TuningParameterIds.BUFFER_CAPACITY -> synchronized(tuningLock) {
                 bufferCapacity = value.roundToInt().coerceIn(1, 30)

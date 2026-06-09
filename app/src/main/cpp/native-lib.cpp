@@ -27,6 +27,7 @@ static const int TUNING_FOOT_BOTTOM_TOUCH_RATIO = 10;
 static const int TUNING_FOOT_CENTER_Y_RATIO = 11;
 static const int TUNING_FOOT_MAX_HEIGHT_RATIO = 12;
 static const int TUNING_ILLUMINATION_BLEND = 13;
+static const int TUNING_CONTOUR_FILTER_STRENGTH = 14;
 
 struct VisionProcessingConfig {
     double cannyLow = 75.0;
@@ -42,6 +43,7 @@ struct VisionProcessingConfig {
     double footCenterYRatio = 0.72;
     double footMaxHeightRatio = 0.32;
     double illuminationBlend = 0.30;
+    double contourFilterStrength = 0.50;
 };
 
 static VisionProcessingConfig g_processingConfig;
@@ -86,6 +88,8 @@ static double getConfigValue(const VisionProcessingConfig& config, int parameter
             return config.footMaxHeightRatio;
         case TUNING_ILLUMINATION_BLEND:
             return config.illuminationBlend;
+        case TUNING_CONTOUR_FILTER_STRENGTH:
+            return config.contourFilterStrength;
         default:
             return 0.0;
     }
@@ -184,6 +188,190 @@ static bool isValidHazardContour(
     return true;
 }
 
+struct ContourScoreResult {
+    double auxiliaryScore = 0.0;
+};
+
+static double pointToSegmentDistance(const Point& point, const Point& segmentStart, const Point& segmentEnd) {
+    double vx = static_cast<double>(segmentEnd.x - segmentStart.x);
+    double vy = static_cast<double>(segmentEnd.y - segmentStart.y);
+    double wx = static_cast<double>(point.x - segmentStart.x);
+    double wy = static_cast<double>(point.y - segmentStart.y);
+
+    double segmentLengthSquared = vx * vx + vy * vy;
+    if (segmentLengthSquared <= 1e-5) {
+        double dx = static_cast<double>(point.x - segmentStart.x);
+        double dy = static_cast<double>(point.y - segmentStart.y);
+        return sqrt(dx * dx + dy * dy);
+    }
+
+    double t = clampDouble((wx * vx + wy * vy) / segmentLengthSquared, 0.0, 1.0);
+    double projectionX = static_cast<double>(segmentStart.x) + t * vx;
+    double projectionY = static_cast<double>(segmentStart.y) + t * vy;
+    double dx = static_cast<double>(point.x) - projectionX;
+    double dy = static_cast<double>(point.y) - projectionY;
+    return sqrt(dx * dx + dy * dy);
+}
+
+static bool isNearRoiEntryBoundary(
+        const vector<Point>& contour,
+        const vector<Point>& roiPoints,
+        double boundaryDistancePx
+) {
+    if (roiPoints.size() < 4) return false;
+
+    const Point& bottomLeft = roiPoints[0];
+    const Point& bottomRight = roiPoints[1];
+    const Point& topRight = roiPoints[2];
+    const Point& topLeft = roiPoints[3];
+
+    for (const Point& point : contour) {
+        double topDistance = pointToSegmentDistance(point, topLeft, topRight);
+        double leftDistance = pointToSegmentDistance(point, bottomLeft, topLeft);
+        double rightDistance = pointToSegmentDistance(point, bottomRight, topRight);
+        if (topDistance <= boundaryDistancePx ||
+            leftDistance <= boundaryDistancePx ||
+            rightDistance <= boundaryDistancePx) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static ContourScoreResult scoreAndFilterRoiEdgeContours(
+        const Mat& roiEdge,
+        Mat& filteredRoiEdge,
+        const vector<Point>& roiPoints,
+        double roiArea,
+        int frameWidth,
+        int frameHeight,
+        const VisionProcessingConfig& config
+) {
+    roiEdge.copyTo(filteredRoiEdge);
+
+    ContourScoreResult result;
+    Mat contourInput = roiEdge.clone();
+    vector<vector<Point>> contours;
+    findContours(contourInput, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+
+    if (contours.empty()) return result;
+
+    const double strength = clampDouble(config.contourFilterStrength, 0.0, 1.0);
+    const int gridCols = 6;
+    const int gridRows = 6;
+    const int gridSize = gridCols * gridRows;
+    int densityGrid[gridSize] = {0};
+
+    vector<int> contourGridIndex(contours.size(), -1);
+    vector<Rect> contourBoxes(contours.size());
+
+    const double smallTextureAreaLimit = max(24.0, roiArea * (0.0014 - 0.0005 * strength));
+    const double smallTextureBoxLimit = max(36.0, roiArea * (0.0060 - 0.0020 * strength));
+    const double smallTextureSideLimit = min(frameWidth, frameHeight) * (0.18 - 0.04 * strength);
+
+    for (size_t i = 0; i < contours.size(); ++i) {
+        const vector<Point>& contour = contours[i];
+        if (contour.empty()) continue;
+
+        Rect box = boundingRect(contour);
+        if (box.width <= 0 || box.height <= 0) continue;
+
+        double area = fabs(contourArea(contour));
+        contourBoxes[i] = box;
+
+        double maxSide = static_cast<double>(max(box.width, box.height));
+        bool smallTextureCandidate =
+                area <= smallTextureAreaLimit &&
+                static_cast<double>(box.area()) <= smallTextureBoxLimit &&
+                maxSide <= smallTextureSideLimit;
+
+        if (!smallTextureCandidate) continue;
+
+        int centerX = box.x + box.width / 2;
+        int centerY = box.y + box.height / 2;
+        int gridX = static_cast<int>(
+                clampDouble(static_cast<double>(centerX * gridCols) / max(1, frameWidth), 0.0, gridCols - 1.0)
+        );
+        int gridY = static_cast<int>(
+                clampDouble(static_cast<double>(centerY * gridRows) / max(1, frameHeight), 0.0, gridRows - 1.0)
+        );
+        int gridIndex = gridY * gridCols + gridX;
+        contourGridIndex[i] = gridIndex;
+        densityGrid[gridIndex]++;
+    }
+
+    const int denseCellLimit = static_cast<int>(round(11.0 - 6.0 * strength));
+    const int eraseThickness = max(2, min(9, config.morphKernelSize / 3));
+    vector<unsigned char> removedAsTextureNoise(contours.size(), 0);
+
+    for (size_t i = 0; i < contours.size(); ++i) {
+        int gridIndex = contourGridIndex[i];
+        if (gridIndex < 0 || densityGrid[gridIndex] <= denseCellLimit) continue;
+
+        removedAsTextureNoise[i] = 1;
+        drawContours(filteredRoiEdge, contours, static_cast<int>(i), Scalar(0), FILLED);
+        drawContours(filteredRoiEdge, contours, static_cast<int>(i), Scalar(0), eraseThickness);
+    }
+
+    const double minLineLength = min(frameWidth, frameHeight) * (0.18 - 0.05 * strength);
+    const double minLinePerimeter = min(frameWidth, frameHeight) * (0.24 - 0.08 * strength);
+    const double lineAspectThreshold = 5.5 - 2.5 * strength;
+    const double boundaryDistancePx = max(6.0, frameHeight * (0.010 + 0.012 * strength));
+    const double minBoundaryPerimeter = min(frameWidth, frameHeight) * (0.14 - 0.05 * strength);
+    const double auxiliaryScoreCap = roiArea * 0.18;
+
+    double auxiliaryScore = 0.0;
+
+    for (size_t i = 0; i < contours.size(); ++i) {
+        if (removedAsTextureNoise[i]) continue;
+
+        const vector<Point>& contour = contours[i];
+        if (contour.size() < 2) continue;
+
+        Rect box = contourBoxes[i];
+        if (box.width <= 0 || box.height <= 0) continue;
+
+        double perimeter = arcLength(contour, false);
+        if (perimeter < 1.0) continue;
+
+        RotatedRect minRect = minAreaRect(contour);
+        double longSide = max(minRect.size.width, minRect.size.height);
+        double shortSide = max(1.0f, min(minRect.size.width, minRect.size.height));
+        double aspectRatio = longSide / shortSide;
+
+        bool longLineContour =
+                longSide >= minLineLength &&
+                perimeter >= minLinePerimeter &&
+                aspectRatio >= lineAspectThreshold;
+
+        bool nearEntryBoundary = isNearRoiEntryBoundary(contour, roiPoints, boundaryDistancePx);
+        bool sizableBoundaryContour =
+                perimeter >= minBoundaryPerimeter ||
+                static_cast<double>(box.area()) >= roiArea * 0.0025;
+
+        if (longLineContour) {
+            auxiliaryScore += min(longSide * (4.5 + 3.5 * strength), roiArea * 0.040);
+        }
+
+        if (nearEntryBoundary && sizableBoundaryContour) {
+            auxiliaryScore += min((perimeter + longSide) * (1.8 + 2.2 * strength), roiArea * 0.035);
+        }
+
+        if (longLineContour && nearEntryBoundary) {
+            auxiliaryScore += min(longSide * (1.5 + strength), roiArea * 0.020);
+        }
+
+        if (auxiliaryScore >= auxiliaryScoreCap) {
+            auxiliaryScore = auxiliaryScoreCap;
+            break;
+        }
+    }
+
+    result.auxiliaryScore = auxiliaryScore;
+    return result;
+}
+
 static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
     if (img_input.empty()) return 0.0;
 
@@ -226,6 +414,18 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
     Mat masked_edge = Mat::zeros(img_edge.size(), CV_8UC1);
     img_edge.copyTo(masked_edge, mask);
 
+    // ROI Edge 원본은 디버그 표시용으로 보존하고, 판단용 복사본에서만 밀집 텍스처 노이즈를 제거함.
+    Mat filtered_edge;
+    ContourScoreResult contourScore = scoreAndFilterRoiEdgeContours(
+            masked_edge,
+            filtered_edge,
+            roi_points,
+            roiArea,
+            width,
+            height,
+            config
+    );
+
     // [요소기술 1] 비선형 형태학적 조작 (Morphological Closing)
     // Canny로 추출된 점자 블록의 엣지는 얇은 선이나 점으로 파편화되어 있음.
     // Size(25, 25)라는 거대한 커널을 사용하여, 끊어진 엣지들을 강제로 팽창(Dilation)시켜 하나로 뭉친 뒤
@@ -235,7 +435,7 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
             MORPH_RECT,
             Size(config.morphKernelSize, config.morphKernelSize)
     );
-    morphologyEx(masked_edge, img_morph, MORPH_CLOSE, kernel);
+    morphologyEx(filtered_edge, img_morph, MORPH_CLOSE, kernel);
 
     if (debugOutput != nullptr) {
         if (debugMode == DEBUG_VIEW_CANNY_INPUT) {
@@ -262,8 +462,10 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
         if (area > maxArea) maxArea = area;
     }
 
-    // 이 maxArea(단일 스칼라 값)는 Kotlin의 [요소기술 2-2: 시계열 버퍼]로 넘어가서 최종 위험 판단의 재료로 사용됨.
-    return maxArea;
+    double hazardScore = maxArea + contourScore.auxiliaryScore;
+
+    // 이 Hazard Score(단일 스칼라 값)는 Kotlin의 [요소기술 2-2: 시계열 버퍼]로 넘어가서 최종 위험 판단의 재료로 사용됨.
+    return min(hazardScore, 999999.0);
 }
 
 extern "C"
@@ -333,6 +535,9 @@ Java_kr_ac_yu_smombieproject_NativeProcessor_setNativeTuningValue(
             break;
         case TUNING_ILLUMINATION_BLEND:
             g_processingConfig.illuminationBlend = clampDouble(value, 0.0, 1.0);
+            break;
+        case TUNING_CONTOUR_FILTER_STRENGTH:
+            g_processingConfig.contourFilterStrength = clampDouble(value, 0.0, 1.0);
             break;
         default:
             return 0.0;
