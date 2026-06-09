@@ -9,9 +9,10 @@ using namespace cv;
 using namespace std;
 
 static const int DEBUG_VIEW_NONE = 0;
-static const int DEBUG_VIEW_CANNY = 1;
-static const int DEBUG_VIEW_ROI_EDGE = 2;
-static const int DEBUG_VIEW_MORPHOLOGY = 3;
+static const int DEBUG_VIEW_CANNY_INPUT = 1;
+static const int DEBUG_VIEW_CANNY = 2;
+static const int DEBUG_VIEW_ROI_EDGE = 3;
+static const int DEBUG_VIEW_MORPHOLOGY = 4;
 
 static const int TUNING_CANNY_LOW = 1;
 static const int TUNING_CANNY_HIGH = 2;
@@ -22,10 +23,14 @@ static const int TUNING_MAX_CONTOUR_AREA_RATIO_TO_ROI = 6;
 static const int TUNING_MAX_THIN_CONTOUR_ASPECT_RATIO = 7;
 static const int TUNING_MIN_CONTOUR_EXTENT = 8;
 static const int TUNING_MIN_CONTOUR_CENTER_Y_RATIO = 9;
+static const int TUNING_FOOT_BOTTOM_TOUCH_RATIO = 10;
+static const int TUNING_FOOT_CENTER_Y_RATIO = 11;
+static const int TUNING_FOOT_MAX_HEIGHT_RATIO = 12;
+static const int TUNING_ILLUMINATION_BLEND = 13;
 
 struct VisionProcessingConfig {
-    double cannyLow = 70.0;
-    double cannyHigh = 200.0;
+    double cannyLow = 75.0;
+    double cannyHigh = 120.0;
     int morphKernelSize = 25;
     double minContourAreaPx = 200.0;
     double minContourAreaRatioToRoi = 0.0015;
@@ -33,6 +38,10 @@ struct VisionProcessingConfig {
     double maxThinContourAspectRatio = 8.0;
     double minContourExtent = 0.14;
     double minContourCenterYRatio = 0.48;
+    double footBottomTouchRatio = 0.94;
+    double footCenterYRatio = 0.72;
+    double footMaxHeightRatio = 0.32;
+    double illuminationBlend = 0.30;
 };
 
 static VisionProcessingConfig g_processingConfig;
@@ -69,6 +78,14 @@ static double getConfigValue(const VisionProcessingConfig& config, int parameter
             return config.minContourExtent;
         case TUNING_MIN_CONTOUR_CENTER_Y_RATIO:
             return config.minContourCenterYRatio;
+        case TUNING_FOOT_BOTTOM_TOUCH_RATIO:
+            return config.footBottomTouchRatio;
+        case TUNING_FOOT_CENTER_Y_RATIO:
+            return config.footCenterYRatio;
+        case TUNING_FOOT_MAX_HEIGHT_RATIO:
+            return config.footMaxHeightRatio;
+        case TUNING_ILLUMINATION_BLEND:
+            return config.illuminationBlend;
         default:
             return 0.0;
     }
@@ -84,8 +101,11 @@ static VisionProcessingConfig getProcessingConfigSnapshot() {
  * The camera input is a single Y-channel grayscale frame, so this estimates the
  * slow-varying lighting field and keeps local surface structure as reflectance.
  */
-static Mat normalizeIllumination(const Mat& gray) {
+static Mat normalizeIllumination(const Mat& gray, double blend) {
     if (gray.empty()) return gray;
+
+    double safeBlend = clampDouble(blend, 0.0, 1.0);
+    if (safeBlend <= 0.0) return gray.clone();
 
     Mat grayFloat;
     gray.convertTo(grayFloat, CV_32F);
@@ -100,11 +120,29 @@ static Mat normalizeIllumination(const Mat& gray) {
 
     Mat reflectance;
     divide(grayFloat, illumination, reflectance, 128.0);
-    normalize(reflectance, reflectance, 0, 255, NORM_MINMAX);
 
-    Mat normalized;
-    reflectance.convertTo(normalized, CV_8UC1);
-    return normalized;
+    Mat corrected;
+    reflectance.convertTo(corrected, CV_8UC1);
+
+    if (safeBlend >= 1.0) return corrected;
+
+    Mat blended;
+    addWeighted(gray, 1.0 - safeBlend, corrected, safeBlend, 0.0, blended);
+    return blended;
+}
+
+static bool isLikelyFootContour(
+        const Rect& box,
+        double centerY,
+        int frameHeight,
+        const VisionProcessingConfig& config
+) {
+    double bottom = static_cast<double>(box.y + box.height);
+    bool touchesFrameBottom = bottom >= frameHeight * config.footBottomTouchRatio;
+    bool isCenteredLow = centerY >= frameHeight * config.footCenterYRatio;
+    bool hasLimitedHeight = box.height <= frameHeight * config.footMaxHeightRatio;
+
+    return touchesFrameBottom && isCenteredLow && hasLimitedHeight;
 }
 
 static bool isValidHazardContour(
@@ -139,6 +177,8 @@ static bool isValidHazardContour(
     if (fabs(m.m00) < 1e-5) return false;
 
     double centerY = m.m01 / m.m00;
+    if (isLikelyFootContour(box, centerY, frameHeight, config)) return false;
+
     if (centerY < frameHeight * config.minContourCenterYRatio) return false;
 
     return true;
@@ -159,14 +199,14 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
 
     // [조명 정규화] 큰 스케일의 밝기 배경을 제거하여 나무 그림자나 햇빛 편차가
     // Canny Edge 단계에서 거대한 가짜 경계로 증폭되는 현상을 완화함.
-    img_normalized = normalizeIllumination(img_gray);
+    img_normalized = normalizeIllumination(img_gray, config.illuminationBlend);
 
     // Low-pass Filter(가우시안 블러)를 적용하여 일반 아스팔트의 자글자글한 고주파 노이즈를 1차적으로 소거.
     GaussianBlur(img_normalized, img_blur, Size(5, 5), 0);
 
     // [특징 추출] Canny Edge 문턱값(Threshold) 하드코딩의 공학적 이유:
     // 일반적인 바닥의 그림자나 옅은 얼룩(Low-magnitude)은 무시하고, 점자 블록처럼 명암 대비가 확실한
-    // 물리적 요철(장애물)만 추출하기 위해 문턱값을 (70, 200)으로 보수적으로 높게 설정함.
+    // 물리적 요철(장애물)만 추출하기 위해 실측 튜닝값인 (75, 120)을 기본값으로 사용함.
     Canny(img_blur, img_edge, config.cannyLow, config.cannyHigh);
 
     // [요소기술 2-1: 공간 효율성 최적화] 사다리꼴 ROI(관심 영역) 마스킹
@@ -198,7 +238,9 @@ static double analyzeFrame(Mat& img_input, Mat* debugOutput, int debugMode) {
     morphologyEx(masked_edge, img_morph, MORPH_CLOSE, kernel);
 
     if (debugOutput != nullptr) {
-        if (debugMode == DEBUG_VIEW_CANNY) {
+        if (debugMode == DEBUG_VIEW_CANNY_INPUT) {
+            img_blur.copyTo(*debugOutput);
+        } else if (debugMode == DEBUG_VIEW_CANNY) {
             img_edge.copyTo(*debugOutput);
         } else if (debugMode == DEBUG_VIEW_ROI_EDGE) {
             masked_edge.copyTo(*debugOutput);
@@ -279,6 +321,18 @@ Java_kr_ac_yu_smombieproject_NativeProcessor_setNativeTuningValue(
             break;
         case TUNING_MIN_CONTOUR_CENTER_Y_RATIO:
             g_processingConfig.minContourCenterYRatio = clampDouble(value, 0.0, 1.0);
+            break;
+        case TUNING_FOOT_BOTTOM_TOUCH_RATIO:
+            g_processingConfig.footBottomTouchRatio = clampDouble(value, 0.0, 1.0);
+            break;
+        case TUNING_FOOT_CENTER_Y_RATIO:
+            g_processingConfig.footCenterYRatio = clampDouble(value, 0.0, 1.0);
+            break;
+        case TUNING_FOOT_MAX_HEIGHT_RATIO:
+            g_processingConfig.footMaxHeightRatio = clampDouble(value, 0.0, 1.0);
+            break;
+        case TUNING_ILLUMINATION_BLEND:
+            g_processingConfig.illuminationBlend = clampDouble(value, 0.0, 1.0);
             break;
         default:
             return 0.0;

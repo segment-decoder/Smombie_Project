@@ -47,11 +47,12 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
 
     private val debugModes = intArrayOf(
         SmombieService.DEBUG_VIEW_CAMERA,
+        SmombieService.DEBUG_VIEW_CANNY_INPUT,
         SmombieService.DEBUG_VIEW_CANNY,
         SmombieService.DEBUG_VIEW_ROI_EDGE,
         SmombieService.DEBUG_VIEW_MORPHOLOGY
     )
-    private val debugLabels = arrayOf("CAMERA", "CANNY", "ROI EDGE", "MORPH")
+    private val debugLabels = arrayOf("CAMERA", "INPUT", "CANNY", "ROI EDGE", "MORPH")
     private var debugModeIndex = 0
 
     private val requestPermissionLauncher = registerForActivityResult(

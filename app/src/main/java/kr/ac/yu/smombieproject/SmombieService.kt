@@ -49,9 +49,10 @@ class SmombieService : LifecycleService() {
 
     companion object {
         const val DEBUG_VIEW_CAMERA = 0
-        const val DEBUG_VIEW_CANNY = 1
-        const val DEBUG_VIEW_ROI_EDGE = 2
-        const val DEBUG_VIEW_MORPHOLOGY = 3
+        const val DEBUG_VIEW_CANNY_INPUT = 1
+        const val DEBUG_VIEW_CANNY = 2
+        const val DEBUG_VIEW_ROI_EDGE = 3
+        const val DEBUG_VIEW_MORPHOLOGY = 4
 
         private var instance: SmombieService? = null
         
