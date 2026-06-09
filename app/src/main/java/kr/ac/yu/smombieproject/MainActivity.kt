@@ -141,8 +141,8 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         ivDebugFrame.setImageDrawable(null)
     }
 
-    override fun onDataUpdated(score: Double, isHazardous: Boolean, type: Int) {
-        runOnUiThread { updateUI(score, isHazardous, type) }
+    override fun onDataUpdated(score: Double, isHazardous: Boolean) {
+        runOnUiThread { updateUI(score, isHazardous) }
     }
 
     override fun onDebugFrameUpdated(bitmap: Bitmap?) {
@@ -259,17 +259,11 @@ class MainActivity : AppCompatActivity(), SmombieService.ServiceCallback {
         }
     }
 
-    private fun updateUI(score: Double, isHazardous: Boolean, type: Int) {
-        val typeStr = when (type) {
-            1 -> "BRAILLE"
-            2 -> "CROSSWALK"
-            3 -> "OBSTACLE"
-            else -> "UNKNOWN"
-        }
-        tvAreaData.text = String.format(Locale.US, "Detected: %s (Score: %.1f)", typeStr, score)
+    private fun updateUI(score: Double, isHazardous: Boolean) {
+        tvAreaData.text = String.format(Locale.US, "Hazard Score: %.1f", score)
 
         if (isHazardous) {
-            tvStatus.text = String.format(Locale.US, "DANGER: %s", typeStr)
+            tvStatus.text = "DANGER"
             statusCard.setCardBackgroundColor(android.graphics.Color.RED)
         } else if (score > 3000.0) {
             tvStatus.text = "CAUTION"

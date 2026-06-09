@@ -40,7 +40,7 @@ class SmombieService : LifecycleService() {
 
     // Bridge for UI communication
     interface ServiceCallback {
-        fun onDataUpdated(score: Double, isHazardous: Boolean, type: Int)
+        fun onDataUpdated(score: Double, isHazardous: Boolean)
         fun onDebugFrameUpdated(bitmap: Bitmap?) {}
         fun onBufferUpdated(bufferState: String) {}
     }
@@ -53,8 +53,6 @@ class SmombieService : LifecycleService() {
         const val DEBUG_VIEW_CANNY = 2
         const val DEBUG_VIEW_ROI_EDGE = 3
         const val DEBUG_VIEW_MORPHOLOGY = 4
-        private const val RESULT_SCORE_MODULUS = 1000000.0
-
         private var instance: SmombieService? = null
         
         fun setPreview(view: PreviewView?) {
@@ -123,8 +121,7 @@ class SmombieService : LifecycleService() {
                 debugResult
             }
 
-            val objectType = (result / RESULT_SCORE_MODULUS).toInt()
-            val hazardScore = result % RESULT_SCORE_MODULUS
+            val hazardScore = result
 
             val isCautionFrame = hazardScore > dangerScoreThreshold
             val bufferResult = synchronized(tuningLock) {
@@ -135,11 +132,11 @@ class SmombieService : LifecycleService() {
             val bufferState = bufferResult.second
 
             // Notify Activity if attached
-            callback?.onDataUpdated(hazardScore, hazardousResult, objectType)
+            callback?.onDataUpdated(hazardScore, hazardousResult)
             callback?.onBufferUpdated(bufferState)
 
             if (hazardousResult) {
-                triggerAlert(objectType)
+                triggerAlert()
             }
         } finally {
             if (analysisMat !== rawMat) {
@@ -264,14 +261,7 @@ class SmombieService : LifecycleService() {
         stateBuffer = TimeStateBuffer(capacity = bufferCapacity, threshold = bufferThreshold)
     }
 
-    private fun triggerAlert(type: Int) {
-        val typeStr = when (type) {
-            1 -> "BRAILLE BLOCK"
-            2 -> "CROSSWALK"
-            3 -> "OBSTACLE"
-            else -> "HAZARD"
-        }
-        
+    private fun triggerAlert() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             vibrator.vibrate(VibrationEffect.createOneShot(300, VibrationEffect.DEFAULT_AMPLITUDE))
         } else {
@@ -280,7 +270,7 @@ class SmombieService : LifecycleService() {
         }
 
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(notificationId, buildNotification("DANGER: $typeStr DETECTED!"))
+        notificationManager.notify(notificationId, buildNotification("DANGER"))
     }
 
     private fun buildNotification(content: String): Notification {
