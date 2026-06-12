@@ -28,6 +28,7 @@ static const int TUNING_FOOT_CENTER_Y_RATIO = 11;
 static const int TUNING_FOOT_MAX_HEIGHT_RATIO = 12;
 static const int TUNING_ILLUMINATION_BLEND = 13;
 static const int TUNING_CONTOUR_FILTER_STRENGTH = 14;
+static const int TUNING_JOINT_SUPPRESS_STRENGTH = 15;
 
 struct VisionProcessingConfig {
     double cannyLow = 75.0;
@@ -44,6 +45,10 @@ struct VisionProcessingConfig {
     double footMaxHeightRatio = 0.32;
     double illuminationBlend = 0.30;
     double contourFilterStrength = 0.50;
+    // [보도블럭 줄눈 억제] 통합 강도(0~1). 0이면 완전 비활성(기존 동작과 동일),
+    // 1이면 최대 활성. 규칙적 평행 직선(줄눈)에만 보조 점수 가산을 막고 소폭 감점한다.
+    // erase는 하지 않으므로 연석·계단·큰 장애물의 엣지는 그대로 모폴로지로 전달된다.
+    double jointSuppressStrength = 0.50;
 };
 
 static VisionProcessingConfig g_processingConfig;
@@ -90,6 +95,8 @@ static double getConfigValue(const VisionProcessingConfig& config, int parameter
             return config.illuminationBlend;
         case TUNING_CONTOUR_FILTER_STRENGTH:
             return config.contourFilterStrength;
+        case TUNING_JOINT_SUPPRESS_STRENGTH:
+            return config.jointSuppressStrength;
         default:
             return 0.0;
     }
@@ -321,6 +328,81 @@ static ContourScoreResult scoreAndFilterRoiEdgeContours(
     const double minBoundaryPerimeter = min(frameWidth, frameHeight) * (0.14 - 0.05 * strength);
     const double auxiliaryScoreCap = roiArea * 0.18;
 
+    // ── [보도블럭 줄눈 억제 — 감점 전용] ─────────────────────────
+    // 통합 강도(jointSuppressStrength)가 0보다 클 때만 동작한다. "긴 직선"이라는 이유만으로
+    // 지우지 않고, 서로 평행하며 등간격으로 촉초히 늘어선 '규칙적 직선 집합(=줄눈 격자)'에
+    // 속한 컨투어만 골라 표시한다. 연석(단일 선)·계단(소수·넓은 간격)·큰 장애물(폐곡선)은
+    // 이 조건을 만족하지 못해 보호된다. erase는 하지 않으므로 미검출 위험이 없다.
+    const double jointStrength = clampDouble(config.jointSuppressStrength, 0.0, 1.0);
+    vector<unsigned char> isJointLine(contours.size(), 0);
+    if (jointStrength > 0.0) {
+        struct LineCand { size_t idx; double angle; double offset; };
+        vector<LineCand> cands;
+        const double jMinLineLength = min(frameWidth, frameHeight) * 0.16;
+        const double jMinAspect = 4.0;
+        for (size_t i = 0; i < contours.size(); ++i) {
+            if (removedAsTextureNoise[i] || contours[i].size() < 2) continue;
+            RotatedRect rr = minAreaRect(contours[i]);
+            double longSide = max(rr.size.width, rr.size.height);
+            double shortSide = max(1.0f, min(rr.size.width, rr.size.height));
+            if (longSide < jMinLineLength || longSide / shortSide < jMinAspect) continue;
+            double ang = rr.angle;
+            if (rr.size.width < rr.size.height) ang += 90.0;
+            ang = fmod(ang + 180.0, 180.0);
+            double rad = ang * CV_PI / 180.0;
+            // 직선의 법선 방향으로 사영한 수직 오프셋(평행선 간격 계산용)
+            double offset = rr.center.x * (-sin(rad)) + rr.center.y * cos(rad);
+            cands.push_back({i, ang, offset});
+        }
+
+        // 강도가 높을수록 최소 평행선 개수를 약간 완화(단, 안전상 3개 미만으로는 내리지 않음)
+        const int minParallelCount = max(3, static_cast<int>(lround(5.0 - 2.0 * jointStrength)));
+        const double angleToleranceDeg = 8.0;   // 평행으로 볼 각도 허용오차
+        const double spacingCvMax = 0.15;        // 간격 균일성(변동계수) 상한
+        const double maxMeanSpacing = frameHeight * 0.18; // 간격이 넓으면 계단으로 보고 제외
+
+        vector<unsigned char> used(cands.size(), 0);
+        for (size_t a = 0; a < cands.size(); ++a) {
+            if (used[a]) continue;
+            vector<size_t> group;
+            group.push_back(a);
+            for (size_t b = 0; b < cands.size(); ++b) {
+                if (b == a || used[b]) continue;
+                double d = fabs(cands[a].angle - cands[b].angle);
+                d = min(d, 180.0 - d);
+                if (d <= angleToleranceDeg) group.push_back(b);
+            }
+            if (static_cast<int>(group.size()) < minParallelCount) continue;
+
+            vector<double> offs;
+            for (size_t k : group) offs.push_back(cands[k].offset);
+            sort(offs.begin(), offs.end());
+            vector<double> spac;
+            for (size_t k = 1; k < offs.size(); ++k) {
+                double s = offs[k] - offs[k - 1];
+                if (s > 1.0) spac.push_back(s);
+            }
+            if (static_cast<int>(spac.size()) < minParallelCount - 1) continue;
+
+            double mean = 0.0;
+            for (double s : spac) mean += s;
+            mean /= spac.size();
+            if (mean <= 0.0 || mean > maxMeanSpacing) continue; // 간격 넓음 → 계단 등으로 보고 보호
+
+            double var = 0.0;
+            for (double s : spac) var += (s - mean) * (s - mean);
+            var /= spac.size();
+            if (sqrt(var) / mean > spacingCvMax) continue;       // 불규칙 간격 → 보호
+
+            // 규칙적 평행 직선 집합 확정 → 줄눈으로 표시(감점 대상)
+            for (size_t k : group) {
+                used[k] = 1;
+                isJointLine[cands[k].idx] = 1;
+            }
+        }
+    }
+    // ───────────────────────────────────────────────────────
+
     double auxiliaryScore = 0.0;
 
     for (size_t i = 0; i < contours.size(); ++i) {
@@ -339,6 +421,14 @@ static ContourScoreResult scoreAndFilterRoiEdgeContours(
         double longSide = max(minRect.size.width, minRect.size.height);
         double shortSide = max(1.0f, min(minRect.size.width, minRect.size.height));
         double aspectRatio = longSide / shortSide;
+
+        // 보도블럭 줄눈으로 확정된 직선: 보조 점수 가산을 막고 소폭 감점(erase 없음).
+        // 강도에 비례해 감점하며, 아래에서 최종 auxiliaryScore를 0으로 하한 처리하므로
+        // 실제 장애물의 면적 기반 점수(maxArea)는 절대 깍이지 않는다.
+        if (isJointLine[i]) {
+            auxiliaryScore -= min(longSide * (1.0 + 2.0 * jointStrength), roiArea * 0.04) * jointStrength;
+            continue;
+        }
 
         bool longLineContour =
                 longSide >= minLineLength &&
@@ -368,7 +458,8 @@ static ContourScoreResult scoreAndFilterRoiEdgeContours(
         }
     }
 
-    result.auxiliaryScore = auxiliaryScore;
+    // 감점이 음수로 내려가도 실제 장애물 검출(maxArea)을 깍지 않도록 0으로 하한 처리.
+    result.auxiliaryScore = max(0.0, auxiliaryScore);
     return result;
 }
 
@@ -538,6 +629,9 @@ Java_kr_ac_yu_smombieproject_NativeProcessor_setNativeTuningValue(
             break;
         case TUNING_CONTOUR_FILTER_STRENGTH:
             g_processingConfig.contourFilterStrength = clampDouble(value, 0.0, 1.0);
+            break;
+        case TUNING_JOINT_SUPPRESS_STRENGTH:
+            g_processingConfig.jointSuppressStrength = clampDouble(value, 0.0, 1.0);
             break;
         default:
             return 0.0;

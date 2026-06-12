@@ -17,6 +17,7 @@ object TuningParameterIds {
     const val FOOT_MAX_HEIGHT_RATIO = 12
     const val ILLUMINATION_BLEND = 13
     const val NATIVE_CONTOUR_FILTER_STRENGTH = 14
+    const val JOINT_SUPPRESS_STRENGTH = 15
 
     const val DANGER_AREA_THRESHOLD = 101
     const val BUFFER_CAPACITY = 102
@@ -52,6 +53,7 @@ object TuningParameters {
         TuningParameter(TuningParameterIds.MORPH_KERNEL, "Morph Kernel", 25.0, 1.0, 99.0, true, TuningScope.NATIVE),
         TuningParameter(TuningParameterIds.CONTOUR_FILTER_STRENGTH, "Contour Filter", 0.50, 0.0, 1.0, false, TuningScope.COMPOSITE),
         TuningParameter(TuningParameterIds.FOOT_FILTER_STRENGTH, "Foot Filter", 0.50, 0.0, 1.0, false, TuningScope.COMPOSITE),
+        TuningParameter(TuningParameterIds.JOINT_SUPPRESS_STRENGTH, "Joint Filter", 0.50, 0.0, 1.0, false, TuningScope.NATIVE),
         TuningParameter(TuningParameterIds.DANGER_AREA_THRESHOLD, "Danger Score", 3500.0, 0.0, 50000.0, false, TuningScope.SERVICE),
         TuningParameter(TuningParameterIds.BUFFER_THRESHOLD, "Buffer Threshold", 5.0, 1.0, 8.0, true, TuningScope.SERVICE)
     )
